@@ -1,4 +1,5 @@
 const uuid = require('uuid');
+const timekeeper = require('timekeeper');
 const model = require('../../src/utils/model');
 const { thinky, schema } = require('../../config');
 
@@ -120,14 +121,31 @@ describe('utils/model', function () {
 
     let Model;
     let record;
+    let hookCalls = [];
 
     before(() => {
       schema.updThing = TEST_JSON_SCHEMA;
       Model = model.create('updThing');
+
+      Model.pre('save', next => {
+        hookCalls.push('pre save 1');
+        next();
+      });
+
+      Model.post('save', next => {
+        hookCalls.push('post save 1');
+        next();
+      });
+
+      Model.pre('validate', next => {
+        hookCalls.push('pre validate 1');
+        next();
+      });
     });
 
     beforeEach(function *() {
       record = yield new Model({ id: uuid.v4(), firstName: 'nikolay', lastName: 'theosom' }).save();
+      hookCalls = [];
     });
 
     it('partially updates data with #udpate', function *() {
@@ -158,6 +176,11 @@ describe('utils/model', function () {
       } catch (error) {
         error.message.must.eql('`firstName` must be string');
       }
+    });
+
+    it('runs the pre/post hooks as expected', function *() {
+      yield record.update({ lastName: 'new name' });
+      hookCalls.must.eql(['pre validate 1', 'pre save 1', 'post save 1']);
     });
   });
 
@@ -237,6 +260,74 @@ describe('utils/model', function () {
       } catch (error) {
         error.message.must.contain('`rev` must match pattern');
       }
+    });
+  });
+
+  describe('a model with createdAt/updatedAt properties', () => {
+    const TEST_JSON_SCHEMA = {
+      type: 'object',
+      name: 'timestampsThing',
+      pluralName: 'timestampsThings',
+      properties: {
+        id: {
+          type: 'string',
+          pattern: '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$'
+        },
+        name: {
+          type: 'string'
+        },
+        createdAt: {
+          type: 'string',
+          format: 'date-time'
+        },
+        updatedAt: {
+          type: 'string',
+          format: 'date-time'
+        }
+      },
+      required: [
+        'name'
+      ]
+    };
+    let Model;
+    let now;
+    let record;
+
+    before(() => {
+      schema.timestampsThing = TEST_JSON_SCHEMA;
+      Model = model.create('timestampsThing');
+      now = new Date();
+    });
+
+    beforeEach(function *() {
+      record = yield new Model({ name: 'nikolay!' }).save();
+    });
+
+    afterEach(() => timekeeper.freeze(now));
+
+    it('automatically populates the created at and updated at timestamps', () => {
+      record.createdAt.must.eql(new Date());
+      record.updatedAt.must.eql(new Date());
+    });
+
+    it('updates the updatedAt and keeps createdAt on existing records', function *() {
+      const tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
+
+      timekeeper.freeze(tomorrow);
+      yield record.merge({ name: 'antikolay' }).save();
+
+      record.createdAt.must.eql(now);
+      record.updatedAt.must.eql(tomorrow);
+    });
+
+    it('updates the updatedAt with custom #update/#replace methods as well', function *() {
+      const tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
+
+      timekeeper.freeze(tomorrow);
+      yield record.update({ name: 'antikolay' });
+
+      record.createdAt.must.eql(now);
+      record.updatedAt.must.eql(tomorrow);
     });
   });
 });

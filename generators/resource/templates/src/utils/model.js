@@ -25,6 +25,10 @@ exports.create = (modelName, opts = {}) => {
     exports.setRevLifecycle(Model);
   }
 
+  if (modelSchema.properties.createdAt || modelSchema.properties.updatedAt) {
+    exports.setTimestampsHandling(Model);
+  }
+
   Model.standardQuery = exports.queryBuilder(Model, modelSchema);
   Model.standardFeed = exports.feedBuilder(Model);
 
@@ -38,8 +42,12 @@ exports.create = (modelName, opts = {}) => {
  * @return {Function} thinky compatible validator
  */
 exports.thinkyValidatorFor = (schema) => {
+  const propsClone = Object.assign({}, schema.properties);
+  const schemaClone = Object.assign({}, schema, { properties: propsClone });
+  delete schemaClone.properties.createdAt;
+  delete schemaClone.properties.updatedAt;
   const ajv = new Ajv({ allErrors: true, v5: true });
-  const validate = ajv.compile(schema);
+  const validate = ajv.compile(schemaClone);
   const humanReadableErrors = errors => errors.map(error => {
     const { dataPath, message, keyword, params: { missingProperty } } = error;
     const path = keyword === 'required' ? `${dataPath}.${missingProperty}` : dataPath;
@@ -168,6 +176,24 @@ exports.setRevLifecycle = Model => {
 };
 
 /**
+ * Sets the automatic `createdAt` and `updatedAt` records handling
+ *
+ * @param {class} thinky model
+ * @return void
+ */
+exports.setTimestampsHandling = Model => {
+  Model.pre('save', function (next) {
+    this.updatedAt = new Date();
+
+    if (!this.createdAt) {
+      this.createdAt = this.updatedAt;
+    }
+
+    next();
+  });
+};
+
+/**
  * The document #update/#replace functionality that
  * takes in account the `rev` versions
  */
@@ -184,6 +210,11 @@ Object.defineProperty(Document.prototype, 'replace', {
   enumerable: false,
   value(data) {
     const { rev = this.rev } = data || { };
+    const applyHooks = hooks => {
+      for (const hook of hooks) {
+        hook.call(this, () => {});
+      }
+    };
 
     // cleaing up all the existing data
     Object.getOwnPropertyNames(this).forEach(key => key !== 'id' && delete this[key]);
@@ -194,7 +225,10 @@ Object.defineProperty(Document.prototype, 'replace', {
     // NOTE: `validate()` can return a Promise
     return Promise.resolve(this.validate()).then(() => {
       const Model = this.getModel();
-      const { _thinky: { r } } = Model;
+      const { _thinky: { r }, _pre: { save: preSave }, _post: { save: postSave } } = Model;
+
+      applyHooks(preSave);
+
       const newData = Object.assign({ }, this, rev ? { rev: uuid.v4() } : { });
       const REV_MISMATCH_ERROR = '`rev` was changed by another update';
 
@@ -206,6 +240,8 @@ Object.defineProperty(Document.prototype, 'replace', {
         if (result.first_error === REV_MISMATCH_ERROR) {
           throw new thinky.Errors.ValidationError(REV_MISMATCH_ERROR);
         }
+
+        applyHooks(postSave);
 
         return Object.assign(this, newData);
       });
